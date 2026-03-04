@@ -1,36 +1,93 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# H5 素材生成器 · H5 Asset Generator
 
-## Getting Started
+> 图片/视频压缩 & 转 H5 ZIP 包 · 纯浏览器端处理，文件不上传服务器
 
-First, run the development server:
+[English](#english) | [中文](#中文)
+
+---
+
+## 中文
+
+### 功能特性
+
+| 功能 | 说明 |
+|------|------|
+| 🖼 图片压缩 | 支持批量 JPG/PNG/WebP，可调节质量和最大体积 |
+| 🎬 视频压缩 | FFmpeg.wasm 处理，**保留 BGM**，CRF 参数精细控制画质 |
+| 📦 图片转 H5 | 多图生成移动端轮播 H5 + ZIP 包（< 5MB，自动重试） |
+| 🎥 视频转 H5 | 自动计算目标码率，确保 ZIP 包 < 5MB，保留音频 |
+
+### 技术栈
+
+- **Next.js 14** (App Router)
+- **@ffmpeg/ffmpeg** — WebAssembly 版 FFmpeg，浏览器内视频处理
+- **browser-image-compression** — 浏览器端图片压缩
+- **jszip** — 浏览器内生成 ZIP 包
+- **shadcn/ui + Tailwind CSS** — 现代 UI
+- **双语支持** — 中文 / English
+
+### 本地运行
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+# 访问 http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### 注意事项
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- 视频功能首次使用需加载 FFmpeg WASM（约 10–30 秒）
+- 建议使用 Chrome / Edge 最新版本
+- 所有处理均在浏览器本地完成，文件不上传服务器
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### 联系 / 意见反馈
 
-## Learn More
+- 微信：**v_winfield**
+- 邮箱：**ak474399@gmail.com**
 
-To learn more about Next.js, take a look at the following resources:
+---
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## English
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### Features
 
-## Deploy on Vercel
+| Feature | Description |
+|---------|-------------|
+| 🖼 Image Compression | Batch JPG/PNG/WebP with adjustable quality & max size |
+| 🎬 Video Compression | FFmpeg.wasm powered, **BGM preserved**, fine-grained CRF control |
+| 📦 Image → H5 | Multiple images → mobile swipeable H5 + ZIP (< 5 MB, auto-retry) |
+| 🎥 Video → H5 | Auto-calculated bitrate keeps ZIP < 5 MB with audio intact |
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+### Tech Stack
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- **Next.js 14** (App Router)
+- **@ffmpeg/ffmpeg** — WebAssembly FFmpeg for in-browser video processing
+- **browser-image-compression** — client-side image compression
+- **jszip** — in-browser ZIP generation
+- **shadcn/ui + Tailwind CSS** — modern UI
+- **Bilingual** — Chinese / English
+
+### Getting Started
+
+```bash
+npm install
+npm run dev
+# Open http://localhost:3000
+```
+
+### Notes
+
+- First video processing requires loading FFmpeg WASM (~10–30 s)
+- Latest Chrome / Edge recommended
+- All processing is 100% local — files are never uploaded
+
+### Feedback
+
+- WeChat: **v_winfield**
+- Email: **ak474399@gmail.com**
+
+---
+
+## License
+
+MIT
