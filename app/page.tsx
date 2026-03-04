@@ -1,16 +1,14 @@
 "use client";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ImageIcon, Video, FileCode, Layers, MessageCircle, Mail } from "lucide-react";
+import { Minimize2, FileCode2, Layers, MessageCircle, Mail } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useLang } from "@/components/LanguageContext";
 import LanguageToggle from "@/components/LanguageToggle";
 
-const ImageCompressor = dynamic(() => import("@/components/ImageCompressor"), { ssr: false });
-const VideoCompressor = dynamic(() => import("@/components/VideoCompressor"), { ssr: false });
-const ImageToH5 = dynamic(() => import("@/components/ImageToH5"), { ssr: false });
-const VideoToH5 = dynamic(() => import("@/components/VideoToH5"), { ssr: false });
+const SmartCompressor = dynamic(() => import("@/components/SmartCompressor"), { ssr: false });
+const SmartH5Converter = dynamic(() => import("@/components/SmartH5Converter"), { ssr: false });
 
 export default function Home() {
   const { t } = useLang();
@@ -37,49 +35,29 @@ export default function Home() {
         </div>
 
         {/* Tabs */}
-        <Tabs defaultValue="image-compress">
-          <TabsList className="grid grid-cols-4 mb-6 h-auto">
+        <Tabs defaultValue="compress">
+          <TabsList className="grid grid-cols-2 mb-6 h-auto">
             <TabsTrigger
-              value="image-compress"
+              value="compress"
               className="flex flex-col gap-1 py-2 text-xs sm:text-sm sm:flex-row sm:gap-2"
             >
-              <ImageIcon size={15} />
-              <span>{t.tabImageCompress}</span>
+              <Minimize2 size={15} />
+              <span>压缩（自动识别）</span>
             </TabsTrigger>
             <TabsTrigger
-              value="video-compress"
+              value="to-h5"
               className="flex flex-col gap-1 py-2 text-xs sm:text-sm sm:flex-row sm:gap-2"
             >
-              <Video size={15} />
-              <span>{t.tabVideoCompress}</span>
-            </TabsTrigger>
-            <TabsTrigger
-              value="image-h5"
-              className="flex flex-col gap-1 py-2 text-xs sm:text-sm sm:flex-row sm:gap-2"
-            >
-              <ImageIcon size={15} />
-              <span>{t.tabImageH5}</span>
-            </TabsTrigger>
-            <TabsTrigger
-              value="video-h5"
-              className="flex flex-col gap-1 py-2 text-xs sm:text-sm sm:flex-row sm:gap-2"
-            >
-              <FileCode size={15} />
-              <span>{t.tabVideoH5}</span>
+              <FileCode2 size={15} />
+              <span>转 H5（自动识别）</span>
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="image-compress">
-            <ImageCompressor />
+          <TabsContent value="compress">
+            <SmartCompressor />
           </TabsContent>
-          <TabsContent value="video-compress">
-            <VideoCompressor />
-          </TabsContent>
-          <TabsContent value="image-h5">
-            <ImageToH5 />
-          </TabsContent>
-          <TabsContent value="video-h5">
-            <VideoToH5 />
+          <TabsContent value="to-h5">
+            <SmartH5Converter />
           </TabsContent>
         </Tabs>
 
