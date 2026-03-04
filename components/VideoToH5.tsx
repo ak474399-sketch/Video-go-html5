@@ -39,69 +39,96 @@ export default function VideoToH5() {
 
     try {
       setStatus(t.ffmpegLoading);
-      const ffmpeg = await getFFmpeg((p) => setProgress(Math.round(p * 0.7)));
+      const ffmpeg = await getFFmpeg((p) => setProgress(Math.round(p * 0.6)));
 
       setStatus(t.analyzeVideo);
       const duration = await getVideoDuration(file);
-      const targetVideoBitrate = calcTargetBitrate(duration, 4.85 * 1024 * 1024, 128000);
       const audioBitrate = 128;
 
-      setInfo(
-        t.videoDurationPrefix +
-          duration.toFixed(1) +
-          t.videoBitratePrefix +
-          Math.round(targetVideoBitrate / 1000) +
-          t.videoBitrateSuffix
-      );
-      setStatus(t.compressingVideoAudio);
+      // 首次目标设 4.5MB（预留 ZIP 结构 + HTML 开销 + ABR 误差缓冲）
+      const INITIAL_TARGET = 4.5 * 1024 * 1024;
+      const RETRY_FACTOR = 0.75; // 每次重试缩减 25%
+      const MAX_ATTEMPTS = 4;
 
-      await ffmpeg.writeFile("input_v.mp4", await fetchFile(file));
+      let zipBlob: Blob | null = null;
+      let attempt = 0;
+      let currentTarget = INITIAL_TARGET;
 
-      await ffmpeg.exec([
-        "-i", "input_v.mp4",
-        "-c:v", "libx264",
-        "-b:v", `${Math.round(targetVideoBitrate / 1000)}k`,
-        "-maxrate", `${Math.round((targetVideoBitrate / 1000) * 1.5)}k`,
-        "-bufsize", `${Math.round((targetVideoBitrate / 1000) * 2)}k`,
-        "-preset", "fast",
-        "-c:a", "aac",
-        "-b:a", `${audioBitrate}k`,
-        "-movflags", "+faststart",
-        "output_v.mp4",
-      ]);
+      while (attempt < MAX_ATTEMPTS) {
+        attempt++;
+        const targetVideoBitrate = calcTargetBitrate(duration, currentTarget, audioBitrate * 1000);
 
-      const videoData = await ffmpeg.readFile("output_v.mp4");
-      await ffmpeg.deleteFile("input_v.mp4");
-      await ffmpeg.deleteFile("output_v.mp4");
+        setInfo(
+          t.videoDurationPrefix +
+            duration.toFixed(1) +
+            t.videoBitratePrefix +
+            Math.round(targetVideoBitrate / 1000) +
+            t.videoBitrateSuffix
+        );
+        setStatus(
+          attempt === 1
+            ? t.compressingVideoAudio
+            : `[${attempt}/${MAX_ATTEMPTS}] ${t.compressingVideoAudio}`
+        );
 
-      setProgress(78);
-      setStatus(t.generatingH5);
+        await ffmpeg.writeFile("input_v.mp4", await fetchFile(file));
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const videoBlob = new Blob([videoData as any], { type: "video/mp4" });
-      const videoFilename = "video.mp4";
+        await ffmpeg.exec([
+          "-i", "input_v.mp4",
+          "-c:v", "libx264",
+          "-b:v", `${Math.round(targetVideoBitrate / 1000)}k`,
+          // maxrate 严格限制峰值，避免 ABR 超标
+          "-maxrate", `${Math.round(targetVideoBitrate / 1000)}k`,
+          "-bufsize", `${Math.round((targetVideoBitrate / 1000) * 1.5)}k`,
+          "-preset", "fast",
+          "-c:a", "aac",
+          "-b:a", `${audioBitrate}k`,
+          "-movflags", "+faststart",
+          "output_v.mp4",
+        ]);
 
-      const html = generateVideoH5({
-        title: effectiveTitle,
-        videoFilename,
-        autoplay,
-        loop,
-        muted,
-      });
+        const videoData = await ffmpeg.readFile("output_v.mp4");
+        await ffmpeg.deleteFile("input_v.mp4");
+        await ffmpeg.deleteFile("output_v.mp4");
 
-      setStatus(t.packingZip);
-      setProgress(90);
+        setProgress(78);
+        setStatus(t.generatingH5);
 
-      const zipBlob = await createZip([
-        { path: "index.html", data: html },
-        { path: `assets/${videoFilename}`, data: videoBlob },
-      ]);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const videoBlob = new Blob([videoData as any], { type: "video/mp4" });
+        const videoFilename = "video.mp4";
 
-      if (!isUnderSizeLimit(zipBlob)) {
-        setError(t.warnVideoZip + formatBytes(zipBlob.size) + t.warnVideoZipSuffix);
+        const html = generateVideoH5({
+          title: effectiveTitle,
+          videoFilename,
+          autoplay,
+          loop,
+          muted,
+        });
+
+        setStatus(t.packingZip);
+        setProgress(90);
+
+        zipBlob = await createZip([
+          { path: "index.html", data: html },
+          { path: `assets/${videoFilename}`, data: videoBlob },
+        ]);
+
+        if (isUnderSizeLimit(zipBlob)) break;
+
+        if (attempt < MAX_ATTEMPTS) {
+          currentTarget *= RETRY_FACTOR;
+          setStatus(
+            `ZIP ${formatBytes(zipBlob.size)} > 5MB，降低码率重试（${attempt + 1}/${MAX_ATTEMPTS}）...`
+          );
+        }
       }
 
-      setResult({ blob: zipBlob });
+      if (!isUnderSizeLimit(zipBlob!)) {
+        setError(t.warnVideoZip + formatBytes(zipBlob!.size) + t.warnVideoZipSuffix);
+      }
+
+      setResult({ blob: zipBlob! });
       setProgress(100);
       setStatus(t.videoGenerateDone);
     } catch (e) {
