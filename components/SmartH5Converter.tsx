@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -8,11 +8,12 @@ import { Download, FileCode2 } from "lucide-react";
 import FileDropzone from "./FileDropzone";
 import ProgressBar from "./ProgressBar";
 import { compressImage, formatBytes } from "@/lib/imageUtils";
-import { calcTargetBitrate, fetchFile, getFFmpeg, getVideoDuration } from "@/lib/ffmpeg";
+import { calcTargetBitrate, fetchFile, getFFmpeg, getVideoDuration, terminateFFmpeg } from "@/lib/ffmpeg";
 import { createZip, downloadBlob, isUnderSizeLimit } from "@/lib/zipUtils";
 import { generateImageH5, generateVideoH5 } from "@/lib/h5Template";
 
 const MAX_ZIP_SIZE = 5 * 1024 * 1024;
+const MIN_VIDEO_BITRATE = 100000;
 
 type H5Result = {
   sourceIndex: number;
@@ -27,13 +28,20 @@ function buildZipName(prefix: string, startNumber: number, index: number) {
   return `${prefix}${startNumber + index}.zip`;
 }
 
+function buildOriginalZipName(fileName: string) {
+  const base = fileName.replace(/\.[^.]+$/, "");
+  return `${base}.zip`;
+}
+
 export default function SmartH5Converter() {
   const [files, setFiles] = useState<File[]>([]);
   const [namePrefix, setNamePrefix] = useState("h5_");
   const [startNumber, setStartNumber] = useState(1);
+  const [keepOriginalName, setKeepOriginalName] = useState(false);
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(false);
+  const cancelRef = useRef(false);
   const [results, setResults] = useState<H5Result[]>([]);
 
   const createImageH5ZipUnder5MB = async (
@@ -76,66 +84,91 @@ export default function SmartH5Converter() {
     const duration = await getVideoDuration(file);
     let targetBytes = 4.4 * 1024 * 1024;
     const audioBitrate = 128000;
+    const maxAttempts = 6;
 
-    for (let i = 0; i < 12; i++) {
-      const bitrate = calcTargetBitrate(duration, targetBytes, audioBitrate);
-      await ffmpeg.writeFile("h5_input.mp4", await fetchFile(file));
-      await ffmpeg.exec([
-        "-i", "h5_input.mp4",
-        "-c:v", "libx264",
-        "-b:v", `${Math.round(bitrate / 1000)}k`,
-        "-maxrate", `${Math.round(bitrate / 1000)}k`,
-        "-bufsize", `${Math.round((bitrate / 1000) * 1.5)}k`,
-        "-preset", "fast",
-        "-c:a", "aac",
-        "-b:a", "128k",
-        "-movflags", "+faststart",
-        "h5_output.mp4",
-      ]);
-      const data = await ffmpeg.readFile("h5_output.mp4");
-      await ffmpeg.deleteFile("h5_input.mp4");
-      await ffmpeg.deleteFile("h5_output.mp4");
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const videoBlob = new Blob([data as any], { type: "video/mp4" });
-      const html = generateVideoH5({ title, videoFilename: "video.mp4", autoplay: true, loop: false, muted: false });
-      const zip = await createZip([
-        { path: "index.html", data: html },
-        { path: "assets/video.mp4", data: videoBlob },
-      ]);
-      if (isUnderSizeLimit(zip, MAX_ZIP_SIZE)) {
-        const mediaUrl = URL.createObjectURL(videoBlob);
-        const previewHtml = `<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>${title}</title><style>html,body{margin:0;height:100%;background:#000;display:flex;align-items:center;justify-content:center}video{width:100%;max-height:100%;object-fit:contain}</style></head><body><video src="${mediaUrl}" controls playsinline autoplay></video></body></html>`;
-        return { zip, previewHtml };
-      }
-      targetBytes *= 0.75;
+    // 先做可达性判断：在最小视频码率 + 固定音频码率下，如果理论上仍 > 5MB，直接返回
+    const minTotalBitrate = MIN_VIDEO_BITRATE + audioBitrate;
+    const minPossibleBytes = (duration * minTotalBitrate) / 8;
+    if (minPossibleBytes > MAX_ZIP_SIZE * 0.98) {
+      throw new Error("视频时长过长，在保证可播放的最低码率下仍无法压到 5MB，请先裁剪时长");
     }
 
-    throw new Error("视频转 H5 多次重试后仍超过 5MB，建议先裁剪时长");
+    // 输入文件写入一次，避免每轮重试重复写入导致耗时过长
+    await ffmpeg.writeFile("h5_input.mp4", await fetchFile(file));
+    try {
+      for (let i = 0; i < maxAttempts; i++) {
+        if (cancelRef.current) {
+          throw new Error("任务已终止");
+        }
+        const bitrate = calcTargetBitrate(duration, targetBytes, audioBitrate);
+        setStatus(`视频转码重试 ${i + 1}/${maxAttempts}（目标码率 ${Math.round(bitrate / 1000)}kbps）`);
+        await ffmpeg.exec([
+          "-i", "h5_input.mp4",
+          "-c:v", "libx264",
+          "-b:v", `${Math.round(bitrate / 1000)}k`,
+          "-maxrate", `${Math.round(bitrate / 1000)}k`,
+          "-bufsize", `${Math.round((bitrate / 1000) * 1.5)}k`,
+          "-preset", "fast",
+          "-c:a", "aac",
+          "-b:a", "128k",
+          "-movflags", "+faststart",
+          "h5_output.mp4",
+        ]);
+        const data = await ffmpeg.readFile("h5_output.mp4");
+        await ffmpeg.deleteFile("h5_output.mp4");
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const videoBlob = new Blob([data as any], { type: "video/mp4" });
+        const html = generateVideoH5({ title, videoFilename: "video.mp4", autoplay: true, loop: false, muted: false });
+        const zip = await createZip([
+          { path: "index.html", data: html },
+          { path: "assets/video.mp4", data: videoBlob },
+        ]);
+        if (isUnderSizeLimit(zip, MAX_ZIP_SIZE)) {
+          const mediaUrl = URL.createObjectURL(videoBlob);
+          const previewHtml = `<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>${title}</title><style>html,body{margin:0;height:100%;background:#000;display:flex;align-items:center;justify-content:center}video{width:100%;max-height:100%;object-fit:contain}</style></head><body><video src="${mediaUrl}" controls playsinline autoplay></video></body></html>`;
+          return { zip, previewHtml };
+        }
+        targetBytes *= 0.75;
+      }
+      throw new Error("视频转 H5 多次重试后仍超过 5MB，建议先裁剪时长");
+    } finally {
+      try {
+        await ffmpeg.deleteFile("h5_input.mp4");
+      } catch {
+        // ignore cleanup error
+      }
+    }
   };
 
   const processBatch = async (indices: number[], reset: boolean) => {
     if (!indices.length) return;
     setLoading(true);
+    cancelRef.current = false;
     if (reset) setResults([]);
     setProgress(0);
     const next: H5Result[] = [];
 
     for (let i = 0; i < indices.length; i++) {
+      if (cancelRef.current) break;
       const sourceIndex = indices[i];
       const f = files[sourceIndex];
       if (!f) continue;
-      const title = `${namePrefix}${startNumber + sourceIndex}`;
+      const title = keepOriginalName
+        ? f.name.replace(/\.[^.]+$/, "")
+        : `${namePrefix}${startNumber + sourceIndex}`;
       try {
         setStatus(`生成 ${i + 1}/${indices.length}: ${f.name}`);
         let zip: Blob;
         let previewHtml: string;
         if (f.type.startsWith("image/")) {
           const out = await createImageH5ZipUnder5MB(f, title);
+          if (cancelRef.current) break;
           zip = out.zip;
           previewHtml = out.previewHtml;
         } else if (f.type.startsWith("video/")) {
           const out = await createVideoH5ZipUnder5MB(f, title);
+          if (cancelRef.current) break;
           zip = out.zip;
           previewHtml = out.previewHtml;
         } else {
@@ -144,7 +177,9 @@ export default function SmartH5Converter() {
         next.push({
           sourceIndex,
           sourceName: f.name,
-          outputName: buildZipName(namePrefix, startNumber, sourceIndex),
+          outputName: keepOriginalName
+            ? buildOriginalZipName(f.name)
+            : buildZipName(namePrefix, startNumber, sourceIndex),
           blob: zip,
           previewHtml,
         });
@@ -165,7 +200,7 @@ export default function SmartH5Converter() {
       next.forEach((r) => map.set(r.sourceIndex, r));
       return Array.from(map.values()).sort((a, b) => a.sourceIndex - b.sourceIndex);
     });
-    setStatus("全部处理完成");
+    setStatus(cancelRef.current ? "已终止处理" : "全部处理完成");
     setLoading(false);
   };
 
@@ -178,6 +213,12 @@ export default function SmartH5Converter() {
   const handleRetryFailed = async () => {
     const failedIndices = results.filter((r) => r.error).map((r) => r.sourceIndex);
     await processBatch(failedIndices, false);
+  };
+
+  const handleCancel = async () => {
+    cancelRef.current = true;
+    setStatus("正在终止任务...");
+    await terminateFFmpeg();
   };
 
   const openPreview = (html: string) => {
@@ -217,7 +258,9 @@ export default function SmartH5Converter() {
   const failedCount = results.filter((r) => r.error).length;
   const previewNames = files
     .slice(0, 10)
-    .map((_, i) => buildZipName(namePrefix, startNumber, i));
+    .map((f, i) =>
+      keepOriginalName ? buildOriginalZipName(f.name) : buildZipName(namePrefix, startNumber, i)
+    );
 
   return (
     <div className="space-y-6">
@@ -247,7 +290,7 @@ export default function SmartH5Converter() {
                 className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background"
                 value={namePrefix}
                 onChange={(e) => setNamePrefix(e.target.value)}
-                disabled={loading}
+                disabled={loading || keepOriginalName}
               />
             </div>
             <div className="space-y-1.5">
@@ -258,10 +301,21 @@ export default function SmartH5Converter() {
                 className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background"
                 value={startNumber}
                 onChange={(e) => setStartNumber(Number(e.target.value || 1))}
-                disabled={loading}
+                disabled={loading || keepOriginalName}
               />
             </div>
           </div>
+
+          <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={keepOriginalName}
+              onChange={(e) => setKeepOriginalName(e.target.checked)}
+              disabled={loading}
+              className="w-4 h-4 accent-primary"
+            />
+            保留原文件命名
+          </label>
 
           {previewNames.length > 0 && (
             <div className="rounded-lg border border-border p-3 text-sm">
@@ -278,9 +332,16 @@ export default function SmartH5Converter() {
 
           {loading && <ProgressBar progress={progress} label={status} />}
 
-          <Button className="w-full" onClick={handleRun} disabled={loading || !files.length}>
-            {loading ? "处理中..." : "开始批量转 H5"}
-          </Button>
+          <div className="flex gap-2">
+            <Button className="flex-1" onClick={handleRun} disabled={loading || !files.length}>
+              {loading ? "处理中..." : "开始批量转 H5"}
+            </Button>
+            {loading && (
+              <Button variant="destructive" onClick={handleCancel}>
+                终止
+              </Button>
+            )}
+          </div>
         </CardContent>
       </Card>
 

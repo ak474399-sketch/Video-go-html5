@@ -73,3 +73,16 @@ export function calcTargetBitrate(
   const videoBits = totalBits - audioBits;
   return Math.max(Math.floor(videoBits / durationSec), 100000);
 }
+
+export async function terminateFFmpeg() {
+  if (ffmpeg) {
+    try {
+      await ffmpeg.terminate();
+    } catch {
+      // ignore terminate errors
+    }
+  }
+  ffmpeg = null;
+  loadPromise = null;
+  loading = false;
+}

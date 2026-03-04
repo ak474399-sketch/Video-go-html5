@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
@@ -9,7 +9,7 @@ import { Download, Minimize2 } from "lucide-react";
 import FileDropzone from "./FileDropzone";
 import ProgressBar from "./ProgressBar";
 import { compressImage, formatBytes } from "@/lib/imageUtils";
-import { calcTargetBitrate, fetchFile, getFFmpeg, getVideoDuration } from "@/lib/ffmpeg";
+import { calcTargetBitrate, fetchFile, getFFmpeg, getVideoDuration, terminateFFmpeg } from "@/lib/ffmpeg";
 import { downloadBlob } from "@/lib/zipUtils";
 
 const MAX_OUTPUT_SIZE = 5 * 1024 * 1024;
@@ -26,15 +26,22 @@ function buildOutputName(prefix: string, startNumber: number, index: number, ext
   return `${prefix}${startNumber + index}.${ext}`;
 }
 
+function buildOriginalNameByExt(fileName: string, ext: string) {
+  const base = fileName.replace(/\.[^.]+$/, "");
+  return `${base}.${ext}`;
+}
+
 export default function SmartCompressor() {
   const [files, setFiles] = useState<File[]>([]);
   const [namePrefix, setNamePrefix] = useState("compress_");
   const [startNumber, setStartNumber] = useState(1);
+  const [keepOriginalName, setKeepOriginalName] = useState(false);
   const [imageQuality, setImageQuality] = useState(80);
   const [videoAudioBitrate, setVideoAudioBitrate] = useState(128);
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(false);
+  const cancelRef = useRef(false);
   const [results, setResults] = useState<ItemResult[]>([]);
 
   const compressImageUnder5MB = async (file: File): Promise<File> => {
@@ -83,11 +90,13 @@ export default function SmartCompressor() {
   const processBatch = async (indices: number[], reset: boolean) => {
     if (!indices.length) return;
     setLoading(true);
+    cancelRef.current = false;
     if (reset) setResults([]);
     setProgress(0);
     const next: ItemResult[] = [];
 
     for (let i = 0; i < indices.length; i++) {
+      if (cancelRef.current) break;
       const sourceIndex = indices[i];
       const f = files[sourceIndex];
       if (!f) continue;
@@ -95,19 +104,25 @@ export default function SmartCompressor() {
         setStatus(`处理中 ${i + 1}/${indices.length}: ${f.name}`);
         if (f.type.startsWith("image/")) {
           const out = await compressImageUnder5MB(f);
+          if (cancelRef.current) break;
           const ext = out.type.split("/")[1] || "jpg";
           next.push({
             sourceIndex,
             sourceName: f.name,
-            outputName: buildOutputName(namePrefix, startNumber, sourceIndex, ext),
+            outputName: keepOriginalName
+              ? buildOriginalNameByExt(f.name, ext)
+              : buildOutputName(namePrefix, startNumber, sourceIndex, ext),
             blob: out,
           });
         } else if (f.type.startsWith("video/")) {
           const out = await compressVideoUnder5MB(f);
+          if (cancelRef.current) break;
           next.push({
             sourceIndex,
             sourceName: f.name,
-            outputName: buildOutputName(namePrefix, startNumber, sourceIndex, "mp4"),
+            outputName: keepOriginalName
+              ? buildOriginalNameByExt(f.name, "mp4")
+              : buildOutputName(namePrefix, startNumber, sourceIndex, "mp4"),
             blob: out,
           });
         } else {
@@ -135,7 +150,7 @@ export default function SmartCompressor() {
       next.forEach((r) => map.set(r.sourceIndex, r));
       return Array.from(map.values()).sort((a, b) => a.sourceIndex - b.sourceIndex);
     });
-    setStatus("处理完成");
+    setStatus(cancelRef.current ? "已终止处理" : "处理完成");
     setLoading(false);
   };
 
@@ -148,6 +163,12 @@ export default function SmartCompressor() {
   const handleRetryFailed = async () => {
     const failedIndices = results.filter((r) => r.error).map((r) => r.sourceIndex);
     await processBatch(failedIndices, false);
+  };
+
+  const handleCancel = async () => {
+    cancelRef.current = true;
+    setStatus("正在终止任务...");
+    await terminateFFmpeg();
   };
 
   const exportCsv = () => {
@@ -171,8 +192,10 @@ export default function SmartCompressor() {
   const okResults = results.filter((r) => r.blob);
   const failedCount = results.filter((r) => r.error).length;
   const previewNames = files.map((f, i) => {
-    const ext = f.type.startsWith("video/") ? "mp4" : "jpg";
-    return buildOutputName(namePrefix, startNumber, i, ext);
+    const ext = f.type.startsWith("video/") ? "mp4" : (f.type.split("/")[1] || "jpg");
+    return keepOriginalName
+      ? buildOriginalNameByExt(f.name, ext)
+      : buildOutputName(namePrefix, startNumber, i, ext);
   });
 
   return (
@@ -203,7 +226,7 @@ export default function SmartCompressor() {
                 className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background"
                 value={namePrefix}
                 onChange={(e) => setNamePrefix(e.target.value)}
-                disabled={loading}
+                disabled={loading || keepOriginalName}
               />
             </div>
             <div className="space-y-1.5">
@@ -214,10 +237,21 @@ export default function SmartCompressor() {
                 className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background"
                 value={startNumber}
                 onChange={(e) => setStartNumber(Number(e.target.value || 1))}
-                disabled={loading}
+                disabled={loading || keepOriginalName}
               />
             </div>
           </div>
+
+          <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={keepOriginalName}
+              onChange={(e) => setKeepOriginalName(e.target.checked)}
+              disabled={loading}
+              className="w-4 h-4 accent-primary"
+            />
+            保留原文件命名
+          </label>
 
           {previewNames.length > 0 && (
             <div className="rounded-lg border border-border p-3 text-sm">
@@ -265,9 +299,16 @@ export default function SmartCompressor() {
 
           {loading && <ProgressBar progress={progress} label={status} />}
 
-          <Button className="w-full" onClick={handleRun} disabled={loading || !files.length}>
-            {loading ? "处理中..." : "开始批量压缩"}
-          </Button>
+          <div className="flex gap-2">
+            <Button className="flex-1" onClick={handleRun} disabled={loading || !files.length}>
+              {loading ? "处理中..." : "开始批量压缩"}
+            </Button>
+            {loading && (
+              <Button variant="destructive" onClick={handleCancel}>
+                终止
+              </Button>
+            )}
+          </div>
         </CardContent>
       </Card>
 
