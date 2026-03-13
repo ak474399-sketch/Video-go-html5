@@ -24,6 +24,7 @@ type VariantItem = {
 export default function VideoObfuscator() {
   const [files, setFiles] = useState<File[]>([]);
   const [loading, setLoading] = useState(false);
+  const [paused, setPaused] = useState(false);
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -35,6 +36,8 @@ export default function VideoObfuscator() {
   const [visibilityHidden, setVisibilityHidden] = useState(false);
   const wakeLockRef = useRef<unknown>(null);
   const cancelRef = useRef(false);
+  const pausedRef = useRef(false);
+  const variantsRef = useRef<VariantItem[]>([]);
 
   useEffect(() => {
     setWakeLockSupported(
@@ -42,12 +45,23 @@ export default function VideoObfuscator() {
         "wakeLock" in navigator &&
         typeof (navigator as Navigator & { wakeLock?: unknown }).wakeLock !== "undefined"
     );
+  }, []);
+
+  useEffect(() => {
+    variantsRef.current = variants;
+  }, [variants]);
+
+  useEffect(() => {
+    pausedRef.current = paused;
+  }, [paused]);
+
+  useEffect(() => {
     return () => {
-      variants.forEach((v) => {
+      variantsRef.current.forEach((v) => {
         if (v.url) URL.revokeObjectURL(v.url);
       });
     };
-  }, [variants]);
+  }, []);
 
   useEffect(() => {
     const onVisibility = () => {
@@ -70,11 +84,18 @@ export default function VideoObfuscator() {
   }, [loading]);
 
   const clearVariants = () => {
-    variants.forEach((v) => {
+    variantsRef.current.forEach((v) => {
       if (v.url) URL.revokeObjectURL(v.url);
     });
     setVariants([]);
+    variantsRef.current = [];
     setZipBlob(null);
+  };
+
+  const waitIfPaused = async () => {
+    while (pausedRef.current && !cancelRef.current) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
   };
 
   const requestWakeLock = async () => {
@@ -117,8 +138,10 @@ export default function VideoObfuscator() {
     setError("");
     setStatus("");
     setProgress(0);
+    setPaused(false);
     setLoading(true);
     cancelRef.current = false;
+    pausedRef.current = false;
     clearVariants();
 
     try {
@@ -142,6 +165,7 @@ export default function VideoObfuscator() {
         let lastReason = "";
         let duplicateCount = 0;
         for (let attempt = 1; attempt <= 8; attempt++) {
+          await waitIfPaused();
           if (cancelRef.current) {
             throw new Error("任务已终止");
           }
@@ -191,20 +215,22 @@ export default function VideoObfuscator() {
 
           md5Set.add(md5);
           const blob = new Blob([bytes], { type: "video/mp4" });
-          generated.push({
+          const successItem: VariantItem = {
             index: i,
             name: outputName,
             blob,
             url: URL.createObjectURL(blob),
             md5,
-          });
+          };
+          generated.push(successItem);
+          setVariants([...generated].sort((a, b) => a.index - b.index));
           setProgress(Math.round((i / 5) * 100));
           success = true;
           break;
         }
 
         if (!success) {
-          generated.push({
+          const failedItem: VariantItem = {
             index: i,
             name: `${input.name.replace(/\.[^.]+$/, "")}_v${i}.mp4`,
             error:
@@ -212,7 +238,9 @@ export default function VideoObfuscator() {
               (duplicateCount > 0
                 ? "多次重试后仍与其他变体 MD5 冲突，可能因视频内容过于单一"
                 : "生成失败，原因未知"),
-          });
+          };
+          generated.push(failedItem);
+          setVariants([...generated].sort((a, b) => a.index - b.index));
           continue;
         }
       }
@@ -245,13 +273,24 @@ export default function VideoObfuscator() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "混淆失败");
     } finally {
+      setPaused(false);
       await releaseWakeLock();
       setLoading(false);
     }
   };
 
+  const handlePauseToggle = () => {
+    setPaused((prev) => {
+      const next = !prev;
+      setStatus(next ? "已暂停，点击继续可恢复" : "继续处理中...");
+      return next;
+    });
+  };
+
   const handleCancel = async () => {
     cancelRef.current = true;
+    setPaused(false);
+    pausedRef.current = false;
     setStatus("正在终止...");
     await terminateFFmpeg();
     await releaseWakeLock();
@@ -328,6 +367,11 @@ export default function VideoObfuscator() {
             <Button className="flex-1" onClick={handleObfuscate} disabled={loading || !files.length}>
               {loading ? "混淆中..." : "开始混淆"}
             </Button>
+            {loading && (
+              <Button variant="outline" onClick={handlePauseToggle}>
+                {paused ? "继续" : "暂停"}
+              </Button>
+            )}
             {loading && (
               <Button variant="destructive" onClick={handleCancel}>
                 终止
