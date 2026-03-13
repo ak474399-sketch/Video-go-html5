@@ -1,11 +1,65 @@
 import { NextResponse } from "next/server";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import JSZip from "jszip";
 
 export const runtime = "nodejs";
+
+type ApiErrorCode =
+  | "INVALID_REQUEST"
+  | "NO_VIDEO_FILES"
+  | "DEPENDENCY_MISSING"
+  | "PYTHON_EXEC_FAILED"
+  | "NO_VARIANTS_GENERATED"
+  | "INTERNAL_ERROR";
+
+type ApiErrorBody = {
+  code: ApiErrorCode;
+  message: string;
+  detail?: string;
+};
+
+class PythonExecError extends Error {
+  stderr: string;
+  exitCode: number | null;
+  constructor(message: string, stderr: string, exitCode: number | null) {
+    super(message);
+    this.stderr = stderr;
+    this.exitCode = exitCode;
+  }
+}
+
+function errorJson(status: number, body: ApiErrorBody) {
+  return NextResponse.json(body, { status });
+}
+
+function checkBinary(bin: string) {
+  const arg = bin === "python3" ? "--version" : "-version";
+  const res = spawnSync(bin, [arg], { encoding: "utf-8" });
+  return {
+    ok: res.status === 0 && !res.error,
+    detail: res.error ? String(res.error.message) : (res.stderr || "").trim(),
+  };
+}
+
+function getDependencyHealth() {
+  const python = checkBinary("python3");
+  const ffmpeg = checkBinary("ffmpeg");
+  const ffprobe = checkBinary("ffprobe");
+  return {
+    python3: python.ok,
+    ffmpeg: ffmpeg.ok,
+    ffprobe: ffprobe.ok,
+    ok: python.ok && ffmpeg.ok && ffprobe.ok,
+    detail: {
+      python3: python.detail || null,
+      ffmpeg: ffmpeg.detail || null,
+      ffprobe: ffprobe.detail || null,
+    },
+  };
+}
 
 async function collectFilesRecursively(dir: string): Promise<string[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -30,11 +84,28 @@ function runPythonObfuscate(inputDir: string, outputDir: string): Promise<void> 
       stderr += String(chunk);
     });
 
-    child.on("error", (err) => reject(err));
+    child.on("error", (err) => reject(new PythonExecError(err.message, stderr, null)));
     child.on("close", (code) => {
       if (code === 0) resolve();
-      else reject(new Error(stderr || `python exit code ${code}`));
+      else {
+        reject(
+          new PythonExecError(
+            "python obfuscation process failed",
+            stderr || `python exit code ${code}`,
+            code
+          )
+        );
+      }
     });
+  });
+}
+
+export async function GET() {
+  const health = getDependencyHealth();
+  return NextResponse.json({
+    code: "OK",
+    message: health.ok ? "ready" : "dependency missing",
+    ...health,
   });
 }
 
@@ -47,12 +118,33 @@ export async function POST(request: Request) {
     await fs.mkdir(inputDir, { recursive: true });
     await fs.mkdir(outputDir, { recursive: true });
 
+    const contentType = request.headers.get("content-type") || "";
+    if (!contentType.includes("multipart/form-data")) {
+      return errorJson(400, {
+        code: "INVALID_REQUEST",
+        message: "请求必须使用 multipart/form-data",
+        detail: `content-type=${contentType || "unknown"}`,
+      });
+    }
+
+    const dep = getDependencyHealth();
+    if (!dep.ok) {
+      return errorJson(503, {
+        code: "DEPENDENCY_MISSING",
+        message: "服务端依赖缺失（python3/ffmpeg/ffprobe）",
+        detail: JSON.stringify(dep.detail),
+      });
+    }
+
     const formData = await request.formData();
     const files = formData.getAll("files").filter((f): f is File => f instanceof File);
     const videos = files.filter((f) => f.type.startsWith("video/") || f.name.toLowerCase().endsWith(".mp4"));
 
     if (!videos.length) {
-      return NextResponse.json({ error: "请至少上传一个视频文件" }, { status: 400 });
+      return errorJson(400, {
+        code: "NO_VIDEO_FILES",
+        message: "请至少上传一个视频文件",
+      });
     }
 
     for (const file of videos) {
@@ -66,7 +158,10 @@ export async function POST(request: Request) {
     const allOutputs = await collectFilesRecursively(outputDir);
     const mp4Outputs = allOutputs.filter((p) => p.toLowerCase().endsWith(".mp4"));
     if (!mp4Outputs.length) {
-      return NextResponse.json({ error: "未生成任何变体文件" }, { status: 500 });
+      return errorJson(500, {
+        code: "NO_VARIANTS_GENERATED",
+        message: "未生成任何变体文件",
+      });
     }
 
     const zip = new JSZip();
@@ -88,8 +183,19 @@ export async function POST(request: Request) {
       },
     });
   } catch (error) {
+    if (error instanceof PythonExecError) {
+      return errorJson(500, {
+        code: "PYTHON_EXEC_FAILED",
+        message: "Python 混淆进程执行失败",
+        detail: error.stderr,
+      });
+    }
     const message = error instanceof Error ? error.message : "处理失败";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return errorJson(500, {
+      code: "INTERNAL_ERROR",
+      message: "服务内部错误",
+      detail: message,
+    });
   } finally {
     await fs.rm(rootTmp, { recursive: true, force: true }).catch(() => undefined);
   }

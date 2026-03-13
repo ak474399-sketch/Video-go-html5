@@ -1,7 +1,7 @@
 "use client";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Minimize2, FileCode2, Layers, MessageCircle, Mail } from "lucide-react";
+import { Minimize2, FileCode2, Shuffle, Layers, MessageCircle, Mail } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useLang } from "@/components/LanguageContext";
@@ -9,6 +9,7 @@ import LanguageToggle from "@/components/LanguageToggle";
 
 const SmartCompressor = dynamic(() => import("@/components/SmartCompressor"), { ssr: false });
 const SmartH5Converter = dynamic(() => import("@/components/SmartH5Converter"), { ssr: false });
+const VideoObfuscator = dynamic(() => import("@/components/VideoObfuscator"), { ssr: false });
 
 export default function Home() {
   const { t } = useLang();
@@ -36,7 +37,7 @@ export default function Home() {
 
         {/* Tabs */}
         <Tabs defaultValue="compress">
-          <TabsList className="grid grid-cols-2 mb-6 h-auto">
+          <TabsList className="grid grid-cols-3 mb-6 h-auto">
             <TabsTrigger
               value="compress"
               className="flex flex-col gap-1 py-2 text-xs sm:text-sm sm:flex-row sm:gap-2"
@@ -51,6 +52,13 @@ export default function Home() {
               <FileCode2 size={15} />
               <span>转 H5（自动识别）</span>
             </TabsTrigger>
+            <TabsTrigger
+              value="obfuscate"
+              className="flex flex-col gap-1 py-2 text-xs sm:text-sm sm:flex-row sm:gap-2"
+            >
+              <Shuffle size={15} />
+              <span>视频混淆</span>
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="compress">
@@ -58,6 +66,9 @@ export default function Home() {
           </TabsContent>
           <TabsContent value="to-h5">
             <SmartH5Converter />
+          </TabsContent>
+          <TabsContent value="obfuscate">
+            <VideoObfuscator />
           </TabsContent>
         </Tabs>
 

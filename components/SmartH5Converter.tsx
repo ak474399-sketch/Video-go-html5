@@ -43,8 +43,6 @@ export default function SmartH5Converter() {
   const [loading, setLoading] = useState(false);
   const cancelRef = useRef(false);
   const [results, setResults] = useState<H5Result[]>([]);
-  const [obfuscating, setObfuscating] = useState(false);
-  const [obfuscateError, setObfuscateError] = useState("");
 
   const createImageH5ZipUnder5MB = async (
     file: File,
@@ -256,37 +254,6 @@ export default function SmartH5Converter() {
     downloadBlob(blob, `h5_result_list_${Date.now()}.csv`);
   };
 
-  const handlePythonObfuscate = async () => {
-    const videos = files.filter(
-      (f) => f.type.startsWith("video/") || f.name.toLowerCase().endsWith(".mp4")
-    );
-    if (!videos.length) {
-      setObfuscateError("当前上传列表里没有视频文件");
-      return;
-    }
-
-    setObfuscateError("");
-    setObfuscating(true);
-    try {
-      const fd = new FormData();
-      videos.forEach((v) => fd.append("files", v));
-      const res = await fetch("/api/video-obfuscate", {
-        method: "POST",
-        body: fd,
-      });
-      if (!res.ok) {
-        const err = (await res.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(err?.error || "Python 混淆失败");
-      }
-      const blob = await res.blob();
-      downloadBlob(blob, "video_obfuscation_variants.zip");
-    } catch (e) {
-      setObfuscateError(e instanceof Error ? e.message : "Python 混淆失败");
-    } finally {
-      setObfuscating(false);
-    }
-  };
-
   const okResults = results.filter((r) => r.blob);
   const failedCount = results.filter((r) => r.error).length;
   const previewNames = files
@@ -365,22 +332,9 @@ export default function SmartH5Converter() {
 
           {loading && <ProgressBar progress={progress} label={status} />}
 
-          {obfuscateError && (
-            <p className="text-sm text-destructive bg-destructive/10 rounded-lg px-3 py-2">
-              {obfuscateError}
-            </p>
-          )}
-
           <div className="flex gap-2">
             <Button className="flex-1" onClick={handleRun} disabled={loading || !files.length}>
               {loading ? "处理中..." : "开始批量转 H5"}
-            </Button>
-            <Button
-              variant="secondary"
-              onClick={handlePythonObfuscate}
-              disabled={loading || obfuscating || !files.length}
-            >
-              {obfuscating ? "混淆中..." : "Python混淆5变体"}
             </Button>
             {loading && (
               <Button variant="destructive" onClick={handleCancel}>
