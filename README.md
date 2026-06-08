@@ -42,7 +42,7 @@ npm run dev
 
 ### 联系 / 意见反馈
 
-- 微信：**v_winfield**
+- 公众号：win同学的ai笔记
 - 邮箱：**ak474399@gmail.com**
 
 ---
